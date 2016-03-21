@@ -1,38 +1,39 @@
 package kiambogo.scrava
 
-import net.liftweb.json._
+import spray.http._
+import spray.client.pipelining._
 import org.joda.time.DateTime
 import org.joda.time.format.ISODateTimeFormat
 import kiambogo.scrava.models._
+import spray.http.HttpRequest
+import scala.concurrent.Future
+import spray.httpx.SprayJsonSupport
 import scala.util.{Failure, Success, Try}
-import scalaj.http.Http
 
-class ScravaClient(accessToken: String) extends Client {
+class ScravaClient(accessToken: String) extends Client with SprayJsonSupport {
 
-  implicit val formats = DefaultFormats
   val authString = "Bearer " + accessToken
+  val baseURI = "https://www.strava.com/api/v3"
+  val pipeline: HttpRequest => Future[HttpResponse] = addHeader("Authorization", authString) ~> sendReceive
 
   // List an athlete's friends. Returns current athlete's friends if athlete_id left null
-  override def listAthleteFriends(athlete_id: Option[Int] = None, page: Option[Int] = None, per_page: Option[Int] = None, retrieveAll: Boolean = false): List[AthleteSummary] = {
+  override def listAthleteFriends(athlete_id: Option[Int] = None, page: Option[Int] = None, per_page: Option[Int] = None, retrieveAll: Boolean = false): Future[List[AthleteSummary]] = {
     var counter = 0
     Iterator.continually {
       counter = counter + 1
-      var request = if (!athlete_id.isDefined) {
-        //Return current authenticated athlete's friends
-        Http(s"https://www.strava.com/api/v3/athlete/friends")
-          .header("Authorization", authString)
-        } else {
-          //Return specified athlete friends
-          Http(s"https://www.strava.com/api/v3/athletes/"+athlete_id.get+"/friends")
-            .header("Authorization", authString)
-        }
+      val path = athlete_id match {
+        case Some(id) => s"/athletes/$id/friends"
+        case None => s"/athlete/friends"
+      }
+      //Return current authenticated athlete's friends
+      var request =  Get(uri = s"$baseURI$path")
         if (retrieveAll) {
-          request = request.param("page", counter.toString)
-          request = request.param("per_page", "200")
+          request = request ~> addHeader("page", counter.toString) ~> addHeader("per_page", "200")
         } else {
-          page.map(p => request = request.param("page", p.toString))
-          per_page.map(pp => request = request.param("per_page", pp.toString))
+          page.map(p => request = request ~> addHeader("page", p.toString))
+          per_page.map(p => request = request ~> addHeader("per_page", p.toString))
         }
+      pipeline(request) ~> unmarshal[List[AthleteSummary]]
         Try { parse(request.asString.body).extract[List[AthleteSummary]] } match {
           case Success(athletes) => athletes
           case Failure(error) => throw new RuntimeException(s"Could not parse list of athlete friends: $error")
